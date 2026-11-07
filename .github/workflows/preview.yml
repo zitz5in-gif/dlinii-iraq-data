@@ -71,6 +71,12 @@ jobs:
         run: |
           set -euo pipefail
           test "$(gh repo view "$GITHUB_REPOSITORY" --json isPrivate --jq .isPrivate)" = false
+          python3 - <<'PY'
+          import json
+          run=json.load(open('/tmp/iraq-run.json'))
+          with open('output/build-source.json','w') as handle:
+              json.dump({key:run[key] for key in ['id','head_sha','html_url','conclusion']},handle,indent=2)
+          PY
           gh release create "$PACKAGE_VERSION" output/* --repo "$GITHUB_REPOSITORY" \
-            --target "$BUILD_SHA" --prerelease --title "$PACKAGE_VERSION (device-test preview)" \
+            --target "$GITHUB_SHA" --prerelease --title "$PACKAGE_VERSION (device-test preview)" \
             --notes 'Real Iraq map, search and driving graph. SHA-256 and five-city server routes verified. Android/iOS device compatibility and offline navigation acceptance are pending; this is not a production release. Data: © OpenStreetMap contributors, Geofabrik. ODbL 1.0.'
