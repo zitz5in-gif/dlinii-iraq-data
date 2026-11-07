@@ -1,0 +1,76 @@
+name: Publish tested build as data preview
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Iraq build run ID
+        required: true
+        default: '42407545238'
+permissions:
+  actions: read
+  contents: write
+jobs:
+  preview:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Verify source build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > /tmp/iraq-run.json
+          python3 - <<'PY'
+          import json,os
+          run=json.load(open('/tmp/iraq-run.json'))
+          assert run['conclusion']=='success' and run['path']=='.github/workflows/iraq.yml'
+          assert run['head_repository']['full_name']==os.environ['GITHUB_REPOSITORY']
+          with open(os.environ['GITHUB_ENV'],'a') as handle:
+              handle.write('BUILD_SHA='+run['head_sha']+'\n')
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: iraq-offline-package
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: output
+      - name: Verify every packaged file
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,re,sqlite3
+          root=pathlib.Path('output')
+          manifest=json.loads((root/'iraq-package.json').read_text())
+          assert manifest['schema']==1 and manifest['country']=='IQ'
+          version=manifest['version']
+          assert re.fullmatch(r'iraq-[0-9]+-[0-9]+',version)
+          names={'map':'iraq.mbtiles','routing':'roads.tar','search':'search.sqlite'}
+          assert len(manifest['files'])==3
+          assert {f['role'] for f in manifest['files']}==set(names)
+          for item in manifest['files']:
+              name=names[item['role']]
+              assert item['url']==f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{version}/{name}"
+              file=root/name
+              assert file.stat().st_size==item['bytes']
+              with file.open('rb') as handle:
+                  assert hashlib.file_digest(handle,'sha256').hexdigest()==item['sha256']
+          for name in ['iraq.mbtiles','search.sqlite']:
+              db=sqlite3.connect(f'file:{root/name}?mode=ro',uri=True)
+              assert db.execute('PRAGMA quick_check').fetchall()==[('ok',)]
+              db.close()
+          routes=json.loads((root/'route-checks.json').read_text())
+          assert {r['city'] for r in routes}=={'Baghdad','Basra','Erbil','Mosul','Halabja'}
+          assert all(r['lengthKm']>0 and r['legs']>0 for r in routes)
+          with open(os.environ['GITHUB_ENV'],'a') as handle:
+              handle.write('PACKAGE_VERSION='+version+'\n')
+          PY
+      - name: Publish preview for device validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh repo view "$GITHUB_REPOSITORY" --json isPrivate --jq .isPrivate)" = false
+          gh release create "$PACKAGE_VERSION" output/* --repo "$GITHUB_REPOSITORY" \
+            --target "$BUILD_SHA" --prerelease --title "$PACKAGE_VERSION (device-test preview)" \
+            --notes 'Real Iraq map, search and driving graph. SHA-256 and five-city server routes verified. Android/iOS device compatibility and offline navigation acceptance are pending; this is not a production release. Data: © OpenStreetMap contributors, Geofabrik. ODbL 1.0.'
