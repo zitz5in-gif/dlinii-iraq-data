@@ -1,0 +1,71 @@
+name: Build Iraq offline package
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish only after testing this data with the mobile engine
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Prepare tools and real map data
+        run: |
+          set -euo pipefail
+          npm ci --prefix tools
+          mkdir -p output graph
+          curl --fail --location --retry 4 --output output/iraq.mbtiles https://download.geofabrik.de/asia/iraq-shortbread-1.0.mbtiles
+          curl --fail --location --retry 4 --output graph/iraq.osm.pbf https://download.geofabrik.de/asia/iraq-latest.osm.pbf
+          node tools/build_search.mjs output/iraq.mbtiles output/search.sqlite
+      - name: Build road network and record the exact builder image
+        run: |
+          set -euo pipefail
+          docker pull ghcr.io/valhalla/valhalla-scripted:latest
+          IMAGE=$(docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/valhalla/valhalla-scripted:latest)
+          echo "VALHALLA_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "$IMAGE" > output/valhalla-builder.txt
+          docker run --rm --mount "type=bind,source=$PWD/graph,target=/custom_files" \
+            -e server_threads=2 -e build_tar=True -e serve_tiles=False \
+            -e build_elevation=False "$IMAGE"
+          test -s graph/valhalla_tiles.tar
+          cp graph/valhalla_tiles.tar output/roads.tar
+          tar -tf output/roads.tar | head -n 5 > output/graph-sample.txt || test -s output/graph-sample.txt
+      - name: Verify genuine road routes in five cities
+        run: |
+          set -euo pipefail
+          docker run -d --name iraq-route-check -p 127.0.0.1:8002:8002 \
+            --mount "type=bind,source=$PWD/graph,target=/custom_files" \
+            --entrypoint valhalla_service "$VALHALLA_IMAGE" /custom_files/valhalla.json 1
+          node tools/verify_routes.mjs
+      - name: Create versioned manifest
+        run: |
+          set -euo pipefail
+          VERSION="iraq-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "PACKAGE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          node tools/build_manifest.mjs output "https://github.com/$GITHUB_REPOSITORY/releases/download/$VERSION" "$VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iraq-offline-package
+          path: output/
+          retention-days: 7
+      - name: Publish verified package when explicitly enabled
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh repo view --json isPrivate --jq .isPrivate)" = false
+          gh release create "$PACKAGE_VERSION" output/* --title "$PACKAGE_VERSION" --notes 'Iraq offline map, road network and search. © OpenStreetMap contributors; Geofabrik. ODbL 1.0.'
+      - name: Stop test service
+        if: always()
+        run: docker rm -f iraq-route-check || true
