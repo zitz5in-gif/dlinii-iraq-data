@@ -24,8 +24,8 @@ jobs:
           set -euo pipefail
           npm ci --prefix tools
           mkdir -p output graph
-          curl --fail --location --retry 4 --output output/iraq.mbtiles https://download.geofabrik.de/asia/iraq-shortbread-1.0.mbtiles
-          curl --fail --location --retry 4 --output graph/iraq.osm.pbf https://download.geofabrik.de/asia/iraq-latest.osm.pbf
+          python3 tools/download.py https://download.geofabrik.de/asia/iraq-shortbread-1.0.mbtiles output/iraq.mbtiles
+          python3 tools/download.py https://download.geofabrik.de/asia/iraq-latest.osm.pbf graph/iraq.osm.pbf
           node tools/build_search.mjs output/iraq.mbtiles output/search.sqlite
       - name: Build road network and record the exact builder image
         run: |
