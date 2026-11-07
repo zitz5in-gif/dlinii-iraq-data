@@ -23,6 +23,7 @@ jobs:
         run: |
           set -euo pipefail
           npm ci --prefix tools
+          python3 tools/test_download.py
           mkdir -p output graph
           python3 tools/download.py https://download.geofabrik.de/asia/iraq-shortbread-1.0.mbtiles output/iraq.mbtiles
           python3 tools/download.py https://download.geofabrik.de/asia/iraq-latest.osm.pbf graph/iraq.osm.pbf
