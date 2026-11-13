@@ -1,0 +1,45 @@
+name: Compress Iraq package for mobile download
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  compress:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      OLD: iraq-42407545238-1
+      NEW: iraq-42407545238-1-compact
+    steps:
+      - name: Fetch the original five-city-tested snapshot
+        run: |
+          gh release download "$OLD" --repo "$REPO" -D raw -p iraq-package.json -p iraq.mbtiles -p roads.tar -p search.sqlite
+      - name: Verify source, compress and verify round trip
+        run: |
+          python3 - <<'PY'
+          import gzip,hashlib,json,os,pathlib,shutil
+          from urllib.parse import urlsplit
+          src=pathlib.Path('raw')
+          out=pathlib.Path('compact')
+          out.mkdir()
+          m=json.loads((src/'iraq-package.json').read_text())
+          assert m['version']==os.environ['OLD'] and m['country']=='IQ'
+          assert {x['role'] for x in m['files']}=={'map','routing','search'}
+          for entry in m['files']:
+              name={'map':'iraq.mbtiles','routing':'roads.tar','search':'search.sqlite'}[entry['role']]
+              f=src/name
+              assert f.stat().st_size==entry['bytes']
+              with f.open('rb') as fp: assert hashlib.file_digest(fp,'sha256').hexdigest()==entry['sha256']
+              archive=out/(name+'.gz')
+              with f.open('rb') as fp, gzip.open(archive,'wb',compresslevel=6) as gz: shutil.copyfileobj(fp,gz)
+              with gzip.open(archive,'rb') as gz: assert hashlib.file_digest(gz,'sha256').hexdigest()==entry['sha256']
+              with archive.open('rb') as fp: digest=hashlib.file_digest(fp,'sha256').hexdigest()
+              entry.update(url=f"https://github.com/{os.environ['REPO']}/releases/download/{os.environ['NEW']}/{archive.name}",encoding='gzip',downloadBytes=archive.stat().st_size,downloadSha256=digest)
+          m.update(schema=2,version=os.environ['NEW'])
+          (out/'iraq-package.json').write_text(json.dumps(m,indent=2))
+          print(sum(x['downloadBytes'] for x in m['files']))
+          PY
+      - name: Publish mobile download
+        run: |
+          gh release create "$NEW" compact/*.gz compact/iraq-package.json --repo "$REPO" --target "$GITHUB_SHA" --prerelease --title "Iraq offline map - compressed mobile package" --notes 'Losslessly compressed map, driving graph and search from iraq-42407545238-1. © OpenStreetMap contributors, Geofabrik. ODbL 1.0.'
